@@ -185,8 +185,8 @@ propio nombre e identidad.
 Construyo herramientas internas y de escritorio: automatización de flujos
 repetitivos, integraciones con modelos de IA, apps nativas con Tauri/Rust. Si tu
 equipo tiene un proceso manual que se podría quitar de en medio, escríbeme por
-**[LinkedIn](https://www.linkedin.com/in/TU-PERFIL)**.
+**[LinkedIn](https://www.linkedin.com/in/arieldelgue)**.
 
 ## Autor
 
-Creado por **Ariel Delgue** · [LinkedIn](https://www.linkedin.com/in/TU-PERFIL)
+Creado por **Ariel Delgue** · [LinkedIn](https://www.linkedin.com/in/arieldelgue)
