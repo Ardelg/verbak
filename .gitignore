@@ -1,0 +1,33 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Documentos internos (no van al repo publico)
+branding/verbak-guia.html
+branding/verbak-ui-preview.html
+branding/verbak-branding-preview.html
+
+# Carpetas de release generadas localmente
+/release/
+/Verbak-*/

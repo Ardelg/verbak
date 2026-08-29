@@ -1,0 +1,25 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Verbak">
+  <defs>
+    <linearGradient id="vk-bg" x1="64" y1="48" x2="448" y2="464" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366F1"/>
+      <stop offset="0.55" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#4338CA"/>
+    </linearGradient>
+    <linearGradient id="vk-sheen" x1="120" y1="80" x2="300" y2="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App tile -->
+  <rect x="16" y="16" width="480" height="480" rx="120" fill="url(#vk-bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="120" fill="url(#vk-sheen)"/>
+
+  <!-- V monogram: a downward "apply / convert" chevron -->
+  <path d="M150 150 L256 356 L362 150"
+        stroke="#ffffff" stroke-width="66"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Caret / tittle: marks where the text lands, and nods to the punctuation clean-up -->
+  <rect x="366" y="104" width="52" height="52" rx="17" fill="#ffffff" fill-opacity="0.92"/>
+</svg>
