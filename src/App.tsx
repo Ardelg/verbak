@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
@@ -46,6 +46,12 @@ interface AppSettings {
   slack_context: string;
   opacity: number;
   sanitize: SanitizeSettings;
+  shortcut_a: string;
+  profile_a: string | null;
+  shortcut_b: string;
+  profile_b: string | null;
+  shortcut_slack: string;
+  profile_slack: string | null;
 }
 
 interface TranslationResult {
@@ -81,7 +87,7 @@ const PROVIDERS: Record<
     label: "Google Gemini",
     keyHint: "AIza...",
     baseHint: "https://generativelanguage.googleapis.com/v1beta",
-    models: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+    models: ["gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
     keyUrl: "https://aistudio.google.com/apikey",
     keyCta: "Obtener clave gratuita ↗",
     free: "full",
@@ -133,7 +139,7 @@ const PRESETS: { key: string; name: string; profile: Omit<ApiProfile, "id"> }[] 
   {
     key: "gemini",
     name: "Google Gemini · gratis con clave, entiende contexto",
-    profile: { name: "Gemini", provider: "gemini", api_key: "", model: "gemini-2.5-flash", base_url: "", enabled: true },
+    profile: { name: "Gemini", provider: "gemini", api_key: "", model: "gemini-3.1-flash-lite", base_url: "", enabled: true },
   },
   {
     key: "ollama",
@@ -431,13 +437,15 @@ function App() {
     slack_context: "",
     opacity: 100,
     sanitize: EMPTY_SANITIZE,
+    shortcut_a: "Ctrl+Alt+D",
+    profile_a: null,
+    shortcut_b: "Ctrl+Alt+F",
+    profile_b: null,
+    shortcut_slack: "Ctrl+Alt+S",
+    profile_slack: null,
   });
   const [saveStatus, setSaveStatus] = useState("");
 
-  const activeProfile = useMemo(
-    () => settings.profiles.find((p) => p.id === settings.active_profile),
-    [settings.profiles, settings.active_profile]
-  );
 
   const profileIsUsable = (p: ApiProfile) =>
     p.enabled &&
@@ -673,12 +681,12 @@ function App() {
               <div className="absolute left-0 top-6 w-72 bg-white border border-slate-200 rounded-xl shadow-xl p-3 text-xs text-slate-600 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50">
                 <p className="font-semibold text-slate-900 mb-2 border-b border-slate-100 pb-1">Atajos de teclado</p>
                 <ul className="space-y-2 mb-3">
-                  <li><strong className="text-indigo-600">Ctrl + Alt + D</strong><br />Reemplazo automático (usa este contexto).</li>
-                  <li><strong className="text-indigo-600">Ctrl + Alt + F</strong><br />Revisión manual (abre esta ventana).</li>
-                  <li><strong className="text-indigo-600">Ctrl + Alt + S</strong><br />Modo Slack (reemplazo automático informal).</li>
+                  <li><strong className="text-indigo-600">{settings.shortcut_a}</strong><br />Reemplazo automático (usa este contexto).</li>
+                  <li><strong className="text-indigo-600">{settings.shortcut_b}</strong><br />Revisión manual (abre esta ventana).</li>
+                  <li><strong className="text-indigo-600">{settings.shortcut_slack}</strong><br />Modo Slack (reemplazo automático informal).</li>
                 </ul>
                 <div className="border-t border-slate-100 pt-2 text-center text-[10px] text-slate-400">
-                  Creado por Ariel Delgue
+                  Creado por <a href="#" onClick={(e) => { e.preventDefault(); openExternal("https://github.com/Ardelg"); }} className="text-indigo-600 hover:underline">Ariel Delgue</a>
                 </div>
               </div>
             </div>
@@ -1281,17 +1289,68 @@ function App() {
                   />
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-3 text-[11px] text-slate-500 mt-2 leading-relaxed">
-                  <p className="text-slate-700 font-medium mb-1">Atajos</p>
-                  <p>Ctrl + Alt + D → traduce a inglés y reemplaza.</p>
-                  <p>Ctrl + Alt + F → abre esta ventana para revisar.</p>
-                  <p>Ctrl + Alt + S → modo Slack, informal y reemplaza.</p>
-                  <p className="mt-2 text-slate-400">
-                    API en uso:{" "}
-                    {activeProfile
-                      ? `${activeProfile.name} (${PROVIDERS[activeProfile.provider]?.label})`
-                      : "ninguna"}
-                  </p>
+                <div className="rounded-2xl border border-slate-200 bg-white p-3 text-[11px] text-slate-500 mt-2 flex flex-col gap-3">
+                  <p className="text-slate-700 font-medium -mb-1">Atajos y Motores</p>
+                  
+                  <div className="flex flex-col gap-1.5">
+                    <p className="text-slate-600">Traducir y Reemplazar</p>
+                    <div className="flex gap-2">
+                      <input 
+                        value={settings.shortcut_a} 
+                        onChange={(e) => setSettings({ ...settings, shortcut_a: e.target.value })} 
+                        className={`${inputClass} flex-1 py-1`} 
+                        placeholder="Ej: Ctrl+Alt+D"
+                      />
+                      <select 
+                        value={settings.profile_a || ""} 
+                        onChange={(e) => setSettings({ ...settings, profile_a: e.target.value || null })} 
+                        className={`${inputClass} flex-1 py-1`}
+                      >
+                        <option value="">(Perfil Activo)</option>
+                        {settings.profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <p className="text-slate-600">Abrir Revisión</p>
+                    <div className="flex gap-2">
+                      <input 
+                        value={settings.shortcut_b} 
+                        onChange={(e) => setSettings({ ...settings, shortcut_b: e.target.value })} 
+                        className={`${inputClass} flex-1 py-1`} 
+                        placeholder="Ej: Ctrl+Alt+F"
+                      />
+                      <select 
+                        value={settings.profile_b || ""} 
+                        onChange={(e) => setSettings({ ...settings, profile_b: e.target.value || null })} 
+                        className={`${inputClass} flex-1 py-1`}
+                      >
+                        <option value="">(Perfil Activo)</option>
+                        {settings.profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <p className="text-slate-600">Modo Slack (Reemplazar Informal)</p>
+                    <div className="flex gap-2">
+                      <input 
+                        value={settings.shortcut_slack} 
+                        onChange={(e) => setSettings({ ...settings, shortcut_slack: e.target.value })} 
+                        className={`${inputClass} flex-1 py-1`} 
+                        placeholder="Ej: Ctrl+Alt+S"
+                      />
+                      <select 
+                        value={settings.profile_slack || ""} 
+                        onChange={(e) => setSettings({ ...settings, profile_slack: e.target.value || null })} 
+                        className={`${inputClass} flex-1 py-1`}
+                      >
+                        <option value="">(Perfil Activo)</option>
+                        {settings.profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
                 </div>
 
                 <button

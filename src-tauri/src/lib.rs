@@ -50,6 +50,10 @@ fn default_slack_context() -> String {
     "Mensaje de chat informal para compañeros de trabajo en Slack. Usa un tono amigable, natural y muy relajado. NO uses lenguaje corporativo formal.".into()
 }
 
+fn default_shortcut_a() -> String { "Ctrl+Alt+D".into() }
+fn default_shortcut_b() -> String { "Ctrl+Alt+F".into() }
+fn default_shortcut_slack() -> String { "Ctrl+Alt+S".into() }
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct AppSettings {
     /// Clave heredada de la versión anterior: solo se usa para migrar a `profiles`.
@@ -79,6 +83,18 @@ struct AppSettings {
     opacity: u8,
     #[serde(default)]
     sanitize: SanitizeSettings,
+    #[serde(default = "default_shortcut_a")]
+    shortcut_a: String,
+    #[serde(default)]
+    profile_a: Option<String>,
+    #[serde(default = "default_shortcut_b")]
+    shortcut_b: String,
+    #[serde(default)]
+    profile_b: Option<String>,
+    #[serde(default = "default_shortcut_slack")]
+    shortcut_slack: String,
+    #[serde(default)]
+    profile_slack: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -95,6 +111,12 @@ impl Default for AppSettings {
             slack_context: default_slack_context(),
             opacity: default_opacity(),
             sanitize: SanitizeSettings::default(),
+            shortcut_a: default_shortcut_a(),
+            profile_a: None,
+            shortcut_b: default_shortcut_b(),
+            profile_b: None,
+            shortcut_slack: default_shortcut_slack(),
+            profile_slack: None,
         }
     }
 }
@@ -180,9 +202,43 @@ fn get_settings(app: AppHandle) -> AppSettings {
     load_settings(&app)
 }
 
+fn register_shortcuts(app: &AppHandle, settings: &AppSettings) {
+    let _ = app.global_shortcut().unregister_all();
+
+    let handle_a = app.clone();
+    if let Err(e) = app.global_shortcut().on_shortcut(settings.shortcut_a.as_str(), move |_app, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+            handle_flow_a(handle_a.clone());
+        }
+    }) {
+        println!("Error al registrar {}: {:?}", settings.shortcut_a, e);
+    }
+
+    let handle_b = app.clone();
+    if let Err(e) = app.global_shortcut().on_shortcut(settings.shortcut_b.as_str(), move |_app, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+            handle_flow_b(handle_b.clone());
+        }
+    }) {
+        println!("Error al registrar {}: {:?}", settings.shortcut_b, e);
+    }
+
+    let handle_s = app.clone();
+    if let Err(e) = app.global_shortcut().on_shortcut(settings.shortcut_slack.as_str(), move |_app, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+            handle_flow_slack(handle_s.clone());
+        }
+    }) {
+        println!("Error al registrar {}: {:?}", settings.shortcut_slack, e);
+    }
+}
+
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
-    write_settings(&app, &migrate(settings))
+    let migrated = migrate(settings);
+    write_settings(&app, &migrated)?;
+    register_shortcuts(&app, &migrated);
+    Ok(())
 }
 
 /// Cambio rápido de API desde la ventana de revisión, sin tocar el resto.
@@ -504,9 +560,10 @@ fn handle_flow_a(app: AppHandle) {
     println!("Flujo A iniciado");
     tauri::async_runtime::spawn(async move {
         let Some(copied_text) = capture_selection() else { return };
-
+        let settings = load_settings(&app);
+        
         println!("Traduciendo texto A...");
-        match translate_text(&app, &copied_text, None, false, None, None).await {
+        match translate_text(&app, &copied_text, None, false, None, settings.profile_a).await {
             Ok(result) => {
                 let _ = set_clipboard(&result.text);
                 std::thread::sleep(Duration::from_millis(50));
@@ -522,9 +579,10 @@ fn handle_flow_b(app: AppHandle) {
     println!("Flujo B iniciado");
     tauri::async_runtime::spawn(async move {
         let Some(copied_text) = capture_selection() else { return };
+        let settings = load_settings(&app);
 
         println!("Traduciendo texto B...");
-        match translate_text(&app, &copied_text, None, false, None, None).await {
+        match translate_text(&app, &copied_text, None, false, None, settings.profile_b).await {
             Ok(result) => {
                 let _ = app.emit("translation-ready", json!({
                     "original": copied_text,
@@ -547,17 +605,18 @@ fn handle_flow_slack(app: AppHandle) {
     println!("Flujo Slack iniciado");
     tauri::async_runtime::spawn(async move {
         let Some(copied_text) = capture_selection() else { return };
+        let settings = load_settings(&app);
+        let slack_context = settings.slack_context.clone();
 
         println!("Traduciendo para Slack...");
-        let slack_context = load_settings(&app).slack_context;
-
+        
         match translate_text(
             &app,
             &copied_text,
             Some(slack_context),
             true,
             None,
-            None,
+            settings.profile_slack,
         )
         .await
         {
@@ -722,33 +781,17 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Hotkeys using the official Tauri plugin
-            let handle_a = app_handle.clone();
-            if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+D", move |_app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    handle_flow_a(handle_a.clone());
+            let settings = load_settings(&app_handle);
+            
+            // Si no hay APIs configuradas, abre la ventana para el onboarding.
+            if settings.profiles.is_empty() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 }
-            }) {
-                println!("Error al registrar Ctrl+Alt+D: {:?}", e);
             }
-
-            let handle_b = app_handle.clone();
-            if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+F", move |_app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    handle_flow_b(handle_b.clone());
-                }
-            }) {
-                println!("Error al registrar Ctrl+Alt+F: {:?}", e);
-            }
-
-            let handle_s = app_handle.clone();
-            if let Err(e) = app.global_shortcut().on_shortcut("Ctrl+Alt+S", move |_app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    handle_flow_slack(handle_s.clone());
-                }
-            }) {
-                println!("Error al registrar Ctrl+Alt+S: {:?}", e);
-            }
+            
+            register_shortcuts(&app_handle, &settings);
 
             Ok(())
         })
