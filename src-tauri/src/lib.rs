@@ -289,6 +289,26 @@ fn set_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error + Send + Sy
     Ok(())
 }
 
+/// En macOS, `enigo` necesita consultar el layout de teclado actual vía
+/// HIToolbox/TSM para simular teclas, y esas llamadas solo son válidas desde
+/// el hilo principal: si se invocan desde un worker de tokio (como ocurría
+/// antes en los flujos de atajos), macOS 27 las mata con
+/// `dispatch_assert_queue_fail` (EXC_BREAKPOINT). Este helper despacha `f`
+/// al hilo principal y espera el resultado sin bloquear el runtime async.
+async fn run_on_main<T, F>(app: &AppHandle, f: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if app.run_on_main_thread(move || {
+        let _ = tx.send(f());
+    }).is_err() {
+        return None;
+    }
+    rx.await.ok()
+}
+
 fn simulate_copy() {
     let mut enigo = Enigo::new(&Settings::default()).unwrap();
     #[cfg(target_os = "macos")]
@@ -485,7 +505,7 @@ async fn replace_text(app: AppHandle, new_text: String) -> Result<(), String> {
 
     set_clipboard(&new_text).map_err(|e| e.to_string())?;
     std::thread::sleep(Duration::from_millis(100));
-    simulate_paste();
+    run_on_main(&app, simulate_paste).await;
 
     // Opcional: Restaurar portapapeles original
     std::thread::sleep(Duration::from_millis(500));
@@ -530,14 +550,14 @@ fn notify_error(app: &AppHandle, message: String) {
 }
 
 /// Copia la selección actual y devuelve el texto, guardando el portapapeles previo.
-fn capture_selection() -> Option<String> {
+async fn capture_selection(app: &AppHandle) -> Option<String> {
     let orig_clip = get_clipboard().unwrap_or_default();
     {
         let mut guard = ORIGINAL_CLIPBOARD.lock().unwrap();
         *guard = Some(orig_clip.clone());
     }
 
-    simulate_copy();
+    run_on_main(app, simulate_copy).await;
     std::thread::sleep(Duration::from_millis(150)); // Esperar al SO
 
     let copied_text = get_clipboard().unwrap_or_default();
@@ -559,15 +579,15 @@ fn restore_clipboard() {
 fn handle_flow_a(app: AppHandle) {
     println!("Flujo A iniciado");
     tauri::async_runtime::spawn(async move {
-        let Some(copied_text) = capture_selection() else { return };
+        let Some(copied_text) = capture_selection(&app).await else { return };
         let settings = load_settings(&app);
-        
+
         println!("Traduciendo texto A...");
         match translate_text(&app, &copied_text, None, false, None, settings.profile_a).await {
             Ok(result) => {
                 let _ = set_clipboard(&result.text);
                 std::thread::sleep(Duration::from_millis(50));
-                simulate_paste();
+                run_on_main(&app, simulate_paste).await;
                 restore_clipboard();
             }
             Err(e) => notify_error(&app, e),
@@ -578,7 +598,7 @@ fn handle_flow_a(app: AppHandle) {
 fn handle_flow_b(app: AppHandle) {
     println!("Flujo B iniciado");
     tauri::async_runtime::spawn(async move {
-        let Some(copied_text) = capture_selection() else { return };
+        let Some(copied_text) = capture_selection(&app).await else { return };
         let settings = load_settings(&app);
 
         println!("Traduciendo texto B...");
@@ -604,7 +624,7 @@ fn handle_flow_b(app: AppHandle) {
 fn handle_flow_slack(app: AppHandle) {
     println!("Flujo Slack iniciado");
     tauri::async_runtime::spawn(async move {
-        let Some(copied_text) = capture_selection() else { return };
+        let Some(copied_text) = capture_selection(&app).await else { return };
         let settings = load_settings(&app);
         let slack_context = settings.slack_context.clone();
 
@@ -623,7 +643,7 @@ fn handle_flow_slack(app: AppHandle) {
             Ok(result) => {
                 let _ = set_clipboard(&result.text);
                 std::thread::sleep(Duration::from_millis(100));
-                simulate_paste();
+                run_on_main(&app, simulate_paste).await;
                 restore_clipboard();
             }
             Err(e) => notify_error(&app, e),
