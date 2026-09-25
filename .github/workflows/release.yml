@@ -9,6 +9,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag del release a crear (ej: v1.0.2). Si se deja vacío, usa el nombre de la rama.'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -64,8 +69,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Verbak ${{ github.ref_name }}'
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: 'Verbak ${{ github.event.inputs.tag || github.ref_name }}'
           releaseBody: |
             Descarga el instalador para tu sistema.
 
