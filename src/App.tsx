@@ -411,6 +411,91 @@ function OllamaSetup({ model }: { model: string }) {
   );
 }
 
+/// Convierte un KeyboardEvent en el formato "Mod+Mod+Tecla" que espera el
+/// backend (mismo formato que los defaults, ej. "Ctrl+Alt+D"). Devuelve
+/// `null` si todavía no hay una tecla "real" (el usuario soltó justo un
+/// modificador) o si la tecla no tiene un nombre soportado.
+function formatShortcutFromEvent(e: KeyboardEvent): string | null {
+  if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return null;
+
+  const parts: string[] = [];
+  if (e.metaKey) parts.push("Cmd");
+  if (e.ctrlKey) parts.push("Ctrl");
+  if (e.altKey) parts.push("Alt");
+  if (e.shiftKey) parts.push("Shift");
+  if (parts.length === 0) return null; // exigir al menos un modificador
+
+  const namedKeys: Record<string, string> = {
+    " ": "Space",
+    Escape: "Escape",
+    Enter: "Enter",
+    Tab: "Tab",
+    Backspace: "Backspace",
+    Delete: "Delete",
+    ArrowUp: "ArrowUp",
+    ArrowDown: "ArrowDown",
+    ArrowLeft: "ArrowLeft",
+    ArrowRight: "ArrowRight",
+  };
+
+  let keyName: string;
+  if (namedKeys[e.key]) {
+    keyName = namedKeys[e.key];
+  } else if (/^F([1-9]|1\d|2[0-4])$/.test(e.key)) {
+    keyName = e.key;
+  } else if (e.key.length === 1) {
+    keyName = e.key.toUpperCase();
+  } else {
+    return null;
+  }
+
+  parts.push(keyName);
+  return parts.join("+");
+}
+
+/// Campo de atajo "grabable": en vez de tipear "Cmd+Alt+F" a mano (fácil de
+/// errar), se hace clic y se presiona la combinación deseada.
+function ShortcutRecorder({
+  value,
+  onChange,
+  className,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  className?: string;
+  placeholder?: string;
+}) {
+  const [recording, setRecording] = useState(false);
+
+  return (
+    <button
+      type="button"
+      onClick={() => setRecording(true)}
+      onBlur={() => setRecording(false)}
+      onKeyDown={(e) => {
+        if (!recording) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Escape") {
+          setRecording(false);
+          return;
+        }
+        const combo = formatShortcutFromEvent(e.nativeEvent);
+        if (combo) {
+          onChange(combo);
+          setRecording(false);
+        }
+      }}
+      className={`${className} text-left cursor-pointer ${
+        recording ? "ring-2 ring-indigo-500 border-indigo-500 text-indigo-600" : ""
+      }`}
+    >
+      {recording ? "Presioná la combinación…" : value || placeholder}
+    </button>
+  );
+}
+
 function App() {
   const [originalText, setOriginalText] = useState("");
   const [translatedText, setTranslatedText] = useState("");
@@ -1295,11 +1380,11 @@ function App() {
                   <div className="flex flex-col gap-1.5">
                     <p className="text-slate-600">Traducir y Reemplazar</p>
                     <div className="flex gap-2">
-                      <input 
-                        value={settings.shortcut_a} 
-                        onChange={(e) => setSettings({ ...settings, shortcut_a: e.target.value })} 
-                        className={`${inputClass} flex-1 py-1`} 
-                        placeholder="Ej: Ctrl+Alt+D"
+                      <ShortcutRecorder
+                        value={settings.shortcut_a}
+                        onChange={(v) => setSettings({ ...settings, shortcut_a: v })}
+                        className={`${inputClass} flex-1 py-1`}
+                        placeholder="Clic y presioná la combinación"
                       />
                       <select 
                         value={settings.profile_a || ""} 
@@ -1315,11 +1400,11 @@ function App() {
                   <div className="flex flex-col gap-1.5">
                     <p className="text-slate-600">Abrir Revisión</p>
                     <div className="flex gap-2">
-                      <input 
-                        value={settings.shortcut_b} 
-                        onChange={(e) => setSettings({ ...settings, shortcut_b: e.target.value })} 
-                        className={`${inputClass} flex-1 py-1`} 
-                        placeholder="Ej: Ctrl+Alt+F"
+                      <ShortcutRecorder
+                        value={settings.shortcut_b}
+                        onChange={(v) => setSettings({ ...settings, shortcut_b: v })}
+                        className={`${inputClass} flex-1 py-1`}
+                        placeholder="Clic y presioná la combinación"
                       />
                       <select 
                         value={settings.profile_b || ""} 
@@ -1335,11 +1420,11 @@ function App() {
                   <div className="flex flex-col gap-1.5">
                     <p className="text-slate-600">Modo Slack (Reemplazar Informal)</p>
                     <div className="flex gap-2">
-                      <input 
-                        value={settings.shortcut_slack} 
-                        onChange={(e) => setSettings({ ...settings, shortcut_slack: e.target.value })} 
-                        className={`${inputClass} flex-1 py-1`} 
-                        placeholder="Ej: Ctrl+Alt+S"
+                      <ShortcutRecorder
+                        value={settings.shortcut_slack}
+                        onChange={(v) => setSettings({ ...settings, shortcut_slack: v })}
+                        className={`${inputClass} flex-1 py-1`}
+                        placeholder="Clic y presioná la combinación"
                       />
                       <select 
                         value={settings.profile_slack || ""} 
