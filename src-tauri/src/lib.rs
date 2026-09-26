@@ -313,6 +313,16 @@ fn simulate_copy() {
     let mut enigo = Enigo::new(&Settings::default()).unwrap();
     #[cfg(target_os = "macos")]
     {
+        // El atajo que disparó este flujo (p. ej. Cmd+Alt+F) todavía tiene sus
+        // modificadores físicamente presionados en este instante: si no los
+        // soltamos primero, el Cmd+C sintético sale como Cmd+Alt+C (o peor) y
+        // la app enfocada lo ignora, dejando el portapapeles sin actualizar.
+        let _ = enigo.key(Key::Meta, Direction::Release);
+        let _ = enigo.key(Key::Alt, Direction::Release);
+        let _ = enigo.key(Key::Control, Direction::Release);
+        let _ = enigo.key(Key::Shift, Direction::Release);
+        std::thread::sleep(Duration::from_millis(20));
+
         let _ = enigo.key(Key::Meta, Direction::Press);
         let _ = enigo.key(Key::Unicode('c'), Direction::Click);
         let _ = enigo.key(Key::Meta, Direction::Release);
@@ -334,6 +344,14 @@ fn simulate_paste() {
     let mut enigo = Enigo::new(&Settings::default()).unwrap();
     #[cfg(target_os = "macos")]
     {
+        // Mismo motivo que en simulate_copy: soltar los modificadores del
+        // atajo antes de mandar el Cmd+V sintético.
+        let _ = enigo.key(Key::Meta, Direction::Release);
+        let _ = enigo.key(Key::Alt, Direction::Release);
+        let _ = enigo.key(Key::Control, Direction::Release);
+        let _ = enigo.key(Key::Shift, Direction::Release);
+        std::thread::sleep(Duration::from_millis(20));
+
         let _ = enigo.key(Key::Meta, Direction::Press);
         let _ = enigo.key(Key::Unicode('v'), Direction::Click);
         let _ = enigo.key(Key::Meta, Direction::Release);
