@@ -468,30 +468,38 @@ function ShortcutRecorder({
 }) {
   const [recording, setRecording] = useState(false);
 
+  useEffect(() => {
+    if (!recording) return;
+    // Escuchamos en window (no en el botón): WebKit, el motor que usa Tauri
+    // en macOS, no le da foco de teclado a un <button> al hacer clic (a
+    // diferencia de Chromium/WebView2 en Windows), así que un onKeyDown en
+    // el propio botón nunca se dispara ahí.
+    const handleKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setRecording(false);
+        return;
+      }
+      const combo = formatShortcutFromEvent(e);
+      if (combo) {
+        onChange(combo);
+        setRecording(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [recording, onChange]);
+
   return (
     <button
       type="button"
       onClick={() => setRecording(true)}
-      onBlur={() => setRecording(false)}
-      onKeyDown={(e) => {
-        if (!recording) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.key === "Escape") {
-          setRecording(false);
-          return;
-        }
-        const combo = formatShortcutFromEvent(e.nativeEvent);
-        if (combo) {
-          onChange(combo);
-          setRecording(false);
-        }
-      }}
       className={`${className} text-left cursor-pointer ${
         recording ? "ring-2 ring-indigo-500 border-indigo-500 text-indigo-600" : ""
       }`}
     >
-      {recording ? "Presioná la combinación…" : value || placeholder}
+      {recording ? "Presiona la combinación…" : value || placeholder}
     </button>
   );
 }
@@ -1384,7 +1392,7 @@ function App() {
                         value={settings.shortcut_a}
                         onChange={(v) => setSettings({ ...settings, shortcut_a: v })}
                         className={`${inputClass} flex-1 py-1`}
-                        placeholder="Clic y presioná la combinación"
+                        placeholder="Clic y presiona la combinación"
                       />
                       <select 
                         value={settings.profile_a || ""} 
@@ -1404,7 +1412,7 @@ function App() {
                         value={settings.shortcut_b}
                         onChange={(v) => setSettings({ ...settings, shortcut_b: v })}
                         className={`${inputClass} flex-1 py-1`}
-                        placeholder="Clic y presioná la combinación"
+                        placeholder="Clic y presiona la combinación"
                       />
                       <select 
                         value={settings.profile_b || ""} 
@@ -1424,7 +1432,7 @@ function App() {
                         value={settings.shortcut_slack}
                         onChange={(v) => setSettings({ ...settings, shortcut_slack: v })}
                         className={`${inputClass} flex-1 py-1`}
-                        placeholder="Clic y presioná la combinación"
+                        placeholder="Clic y presiona la combinación"
                       />
                       <select 
                         value={settings.profile_slack || ""} 
