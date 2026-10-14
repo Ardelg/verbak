@@ -44,6 +44,7 @@ interface AppSettings {
   lang_b: string;
   context: string;
   slack_context: string;
+  deepl_instructions: string;
   opacity: number;
   sanitize: SanitizeSettings;
   shortcut_a: string;
@@ -528,6 +529,7 @@ function App() {
     lang_b: "EN-US",
     context: "",
     slack_context: "",
+    deepl_instructions: "",
     opacity: 100,
     sanitize: EMPTY_SANITIZE,
     shortcut_a: "Ctrl+Alt+D",
@@ -1190,9 +1192,26 @@ function App() {
                   />
                 </div>
                 <p className="text-[10.5px] text-slate-400 ml-0.5">
-                  El contexto solo lo aplican DeepL y los motores con IA (Gemini, Claude, OpenAI, Ollama).
-                  "Google Traducción" sin clave lo ignora.
+                  El contexto de arriba solo lo aplican los motores con IA (Gemini, Claude, OpenAI, Ollama).
+                  "Google Traducción" sin clave lo ignora, y DeepL usa su propio campo de instrucciones (abajo).
                 </p>
+                <div className="flex flex-col flex-1">
+                  <label className="text-xs text-slate-500 mb-1 ml-0.5">
+                    Instrucciones para DeepL (una por línea)
+                  </label>
+                  <textarea
+                    value={settings.deepl_instructions}
+                    onChange={(e) => setSettings({ ...settings, deepl_instructions: e.target.value })}
+                    className={`${inputClass} flex-1 resize-none p-3 custom-scrollbar min-h-[80px]`}
+                    placeholder={'Ej:\nKeep "Arm A" and "Arm B" unchanged.\nUse "it" for the model, never he/she.'}
+                  />
+                  <p className="text-[10.5px] text-slate-400 mt-1 ml-0.5">
+                    DeepL las aplica con `custom_instructions`, frase por frase, no como el prompt de los motores
+                    con IA de arriba. Solo funciona si el idioma de destino es alemán, inglés, español, francés,
+                    italiano, japonés, coreano o chino (o sus variantes); con cualquier otro destino, DeepL
+                    traduce igual pero sin aplicarlas, y vas a ver un aviso cuando pase.
+                  </p>
+                </div>
               </>
             )}
 

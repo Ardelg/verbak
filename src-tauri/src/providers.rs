@@ -120,6 +120,10 @@ pub struct TranslateRequest<'a> {
     pub informal: bool,
     /// Pide al modelo que evite em-dashes y punto y coma ya en la generación.
     pub plain_punctuation: bool,
+    /// Instrucciones para DeepL, una por línea (se mandan como
+    /// `custom_instructions`). Los demás proveedores la ignoran: ya reciben
+    /// `context` dentro de su propio prompt de sistema.
+    pub deepl_instructions: &'a str,
 }
 
 fn client() -> Result<Client, BoxError> {
@@ -128,13 +132,19 @@ fn client() -> Result<Client, BoxError> {
         .build()?)
 }
 
-pub async fn translate(profile: &ApiProfile, req: &TranslateRequest<'_>) -> Result<String, BoxError> {
+/// Traduce con el perfil dado. El segundo elemento del resultado son avisos
+/// "blandos" (no errores): hoy solo los usa DeepL cuando se pidieron
+/// `custom_instructions` para un idioma que no las soporta.
+pub async fn translate(
+    profile: &ApiProfile,
+    req: &TranslateRequest<'_>,
+) -> Result<(String, Vec<String>), BoxError> {
     match profile.provider {
         Provider::Deepl => deepl(profile, req).await,
-        Provider::Gemini => gemini(profile, req).await,
-        Provider::Openai => openai(profile, req).await,
-        Provider::Anthropic => anthropic(profile, req).await,
-        Provider::Google => google_free(req).await,
+        Provider::Gemini => gemini(profile, req).await.map(|t| (t, Vec::new())),
+        Provider::Openai => openai(profile, req).await.map(|t| (t, Vec::new())),
+        Provider::Anthropic => anthropic(profile, req).await.map(|t| (t, Vec::new())),
+        Provider::Google => google_free(req).await.map(|t| (t, Vec::new())),
     }
 }
 
@@ -147,7 +157,23 @@ const FORMALITY_LANGS: [&str; 10] = [
     "DE", "FR", "IT", "ES", "NL", "PL", "PT-BR", "PT-PT", "JA", "RU",
 ];
 
-async fn deepl(profile: &ApiProfile, req: &TranslateRequest<'_>) -> Result<String, BoxError> {
+/// Idiomas donde DeepL acepta `custom_instructions`. Fuera de esta lista la
+/// API devuelve 400 si se manda el campo, así que se omite y se avisa.
+const CUSTOM_INSTRUCTIONS_LANGS: [&str; 8] = ["DE", "EN", "ES", "FR", "IT", "JA", "KO", "ZH"];
+
+/// Una instrucción por línea; se ignoran las líneas vacías.
+fn parse_custom_instructions(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect()
+}
+
+async fn deepl(
+    profile: &ApiProfile,
+    req: &TranslateRequest<'_>,
+) -> Result<(String, Vec<String>), BoxError> {
     let key = profile.api_key.trim();
     if key.is_empty() {
         return Err("Falta la API Key de DeepL".into());
@@ -163,8 +189,25 @@ async fn deepl(profile: &ApiProfile, req: &TranslateRequest<'_>) -> Result<Strin
     let mut body = json!({
         "text": [req.text],
         "target_lang": req.target_lang,
-        "context": req.context,
     });
+    // Nota: `context` no se manda. Esa API sirve para desambiguar palabras o
+    // fragmentos cortos con el texto que los rodea, no para dar reglas de
+    // estilo; para eso está `custom_instructions`, abajo.
+
+    let mut warnings = Vec::new();
+    let instructions = parse_custom_instructions(req.deepl_instructions);
+    if !instructions.is_empty() {
+        if CUSTOM_INSTRUCTIONS_LANGS.contains(&lang_family(req.target_lang).as_str()) {
+            body.as_object_mut()
+                .unwrap()
+                .insert("custom_instructions".into(), json!(instructions));
+        } else {
+            warnings.push(format!(
+                "Las instrucciones de DeepL no se aplicaron: \"{}\" no está entre los idiomas soportados (DE, EN, ES, FR, IT, JA, KO, ZH).",
+                req.target_lang
+            ));
+        }
+    }
 
     let target_upper = req.target_lang.to_uppercase();
     if FORMALITY_LANGS.contains(&target_upper.as_str()) {
@@ -192,7 +235,7 @@ async fn deepl(profile: &ApiProfile, req: &TranslateRequest<'_>) -> Result<Strin
     parsed
         .pointer("/translations/0/text")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(|s| (s.to_string(), warnings))
         .ok_or_else(|| format!("Respuesta inesperada de DeepL: {}", short(&raw)).into())
 }
 
@@ -672,6 +715,25 @@ mod tests {
     #[test]
     fn strips_code_fence() {
         assert_eq!(clean_llm_output("```\nhola\n```"), "hola");
+    }
+
+    #[test]
+    fn custom_instructions_split_by_line_and_drop_blanks() {
+        let raw = "Keep \"Arm A\" unchanged.\n\n  Use \"it\", never he/she.  \n";
+        assert_eq!(
+            parse_custom_instructions(raw),
+            vec!["Keep \"Arm A\" unchanged.", "Use \"it\", never he/she."]
+        );
+        assert!(parse_custom_instructions("   \n  \n").is_empty());
+    }
+
+    #[test]
+    fn custom_instructions_language_gate_covers_variants() {
+        assert!(CUSTOM_INSTRUCTIONS_LANGS.contains(&lang_family("EN-US").as_str()));
+        assert!(CUSTOM_INSTRUCTIONS_LANGS.contains(&lang_family("ZH").as_str()));
+        // Portugués y neerlandés no están soportados por custom_instructions.
+        assert!(!CUSTOM_INSTRUCTIONS_LANGS.contains(&lang_family("PT-BR").as_str()));
+        assert!(!CUSTOM_INSTRUCTIONS_LANGS.contains(&lang_family("NL").as_str()));
     }
 
     #[test]
