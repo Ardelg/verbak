@@ -79,6 +79,11 @@ struct AppSettings {
     context: String,
     #[serde(default = "default_slack_context")]
     slack_context: String,
+    /// Instrucciones para DeepL (`custom_instructions`), una por línea. Es un
+    /// campo aparte de `context`/`slack_context`: esos son el prompt de los
+    /// proveedores LLM, y DeepL no los usa (ver `providers::deepl`).
+    #[serde(default)]
+    deepl_instructions: String,
     #[serde(default = "default_opacity")]
     opacity: u8,
     #[serde(default)]
@@ -109,6 +114,7 @@ impl Default for AppSettings {
             lang_b: default_lang_b(),
             context: default_context(),
             slack_context: default_slack_context(),
+            deepl_instructions: "".into(),
             opacity: default_opacity(),
             sanitize: SanitizeSettings::default(),
             shortcut_a: default_shortcut_a(),
@@ -272,9 +278,11 @@ async fn test_profile(profile: ApiProfile) -> Result<String, String> {
         context: "",
         informal: false,
         plain_punctuation: true,
+        deepl_instructions: "",
     };
     providers::translate(&profile, &req)
         .await
+        .map(|(text, _warnings)| text)
         .map_err(|e| e.to_string())
 }
 
@@ -323,8 +331,19 @@ fn simulate_copy() {
         let _ = enigo.key(Key::Shift, Direction::Release);
         std::thread::sleep(Duration::from_millis(20));
 
+        // CGEventPost es asíncrono: si el keyDown de 'c' sale pegado al de
+        // Cmd, a veces el WindowServer todavía no fusionó el flag de Cmd en
+        // la tabla de modificadores global, y 'c' llega como si Cmd no
+        // estuviera — la app enfocada lo toma como "escribir la letra c"
+        // y, como hay texto seleccionado, lo reemplaza por una "c" suelta.
+        // Separar press/click/release con una pausa chica le da tiempo al
+        // sistema a asentar el estado antes del siguiente evento.
         let _ = enigo.key(Key::Meta, Direction::Press);
-        let _ = enigo.key(Key::Unicode('c'), Direction::Click);
+        std::thread::sleep(Duration::from_millis(15));
+        let _ = enigo.key(Key::Unicode('c'), Direction::Press);
+        std::thread::sleep(Duration::from_millis(15));
+        let _ = enigo.key(Key::Unicode('c'), Direction::Release);
+        std::thread::sleep(Duration::from_millis(15));
         let _ = enigo.key(Key::Meta, Direction::Release);
     }
     #[cfg(not(target_os = "macos"))]
@@ -352,8 +371,16 @@ fn simulate_paste() {
         let _ = enigo.key(Key::Shift, Direction::Release);
         std::thread::sleep(Duration::from_millis(20));
 
+        // Mismo motivo que en simulate_copy: separar press/click/release le
+        // da tiempo al sistema a asentar el flag de Cmd antes de que llegue
+        // la 'v', si no a veces llega sin el modificador y se escribe una
+        // "v" suelta en vez de pegar.
         let _ = enigo.key(Key::Meta, Direction::Press);
-        let _ = enigo.key(Key::Unicode('v'), Direction::Click);
+        std::thread::sleep(Duration::from_millis(15));
+        let _ = enigo.key(Key::Unicode('v'), Direction::Press);
+        std::thread::sleep(Duration::from_millis(15));
+        let _ = enigo.key(Key::Unicode('v'), Direction::Release);
+        std::thread::sleep(Duration::from_millis(15));
         let _ = enigo.key(Key::Meta, Direction::Release);
     }
     #[cfg(not(target_os = "macos"))]
@@ -475,9 +502,11 @@ async fn translate_text(
             context: &context,
             informal,
             plain_punctuation: settings.sanitize.enabled,
+            deepl_instructions: &settings.deepl_instructions,
         };
         match providers::translate(&profile, &req).await {
-            Ok(raw) => {
+            Ok((raw, soft_warnings)) => {
+                warnings.extend(soft_warnings);
                 return Ok(TranslationResult {
                     text: sanitize::sanitize(&raw, &settings.sanitize),
                     profile_name: profile.name.clone(),
@@ -795,15 +824,28 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
 
+            // Verbak vive en la bandeja: que no quede un icono fijo "activo"
+            // en el Dock (ni en el Cmd+Tab) como una app normal de macOS.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // Setup Tray Icon
             let quit_i = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
             let settings_i = MenuItem::with_id(app, "settings", "Configuración", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&settings_i, &quit_i])?;
 
-            let icon_bytes = include_bytes!("../icons/icon.png");
+            // Icono de bandeja: un glifo monocromo (sin fondo), no el icono
+            // de app a todo color. Con `icon_as_template(true)` en macOS el
+            // sistema lo recolorea solo según el canal alfa (blanco/negro
+            // según el tema), igual que el resto de los iconos del menu bar
+            // en las versiones nuevas de macOS.
+            let icon_bytes = include_bytes!("../icons/tray-icon.png");
             let icon = Image::from_bytes(icon_bytes).expect("Failed to load tray icon");
 
-            let tray_builder = TrayIconBuilder::new().menu(&menu).icon(icon);
+            let tray_builder = TrayIconBuilder::new()
+                .menu(&menu)
+                .icon(icon)
+                .icon_as_template(true);
 
             let _tray = tray_builder
                 .on_menu_event(move |app, event| {
