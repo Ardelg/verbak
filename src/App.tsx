@@ -1197,7 +1197,7 @@ function App() {
                 </p>
                 <div className="flex flex-col flex-1">
                   <label className="text-xs text-slate-500 mb-1 ml-0.5">
-                    Instrucciones para DeepL (una por línea, máximo 10)
+                    Instrucciones para DeepL (una por línea, máximo 10 de hasta 300 caracteres)
                   </label>
                   <textarea
                     value={settings.deepl_instructions}
@@ -1207,8 +1207,9 @@ function App() {
                   />
                   <p className="text-[10.5px] text-slate-400 mt-1 ml-0.5">
                     DeepL las aplica con `custom_instructions`, frase por frase, no como el prompt de los motores
-                    con IA de arriba. Acepta como máximo 10 líneas: si hay más, se mandan solo las primeras 10 y
-                    aparece un aviso (en vez de fallar la traducción). Solo funciona si el idioma de destino es
+                    con IA de arriba. Cada salto de línea cuenta como una instrucción distinta. DeepL acepta como
+                    máximo 10, de hasta 300 caracteres cada una: si te excedes, se mandan las primeras 10 y se recorta
+                    lo largo, con un aviso (en vez de fallar la traducción). Solo funciona si el idioma de destino es
                     alemán, inglés, español, francés, italiano, japonés, coreano o chino (o sus variantes); con
                     cualquier otro destino, DeepL traduce igual pero sin aplicarlas, y también vas a ver un aviso.
                   </p>
