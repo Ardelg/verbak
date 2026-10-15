@@ -173,21 +173,39 @@ fn parse_custom_instructions(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// Si hay más de `MAX_CUSTOM_INSTRUCTIONS`, se mandan solo las primeras y se
-/// devuelve un aviso: mandarlas todas hace que DeepL rechace la traducción
-/// entera con un 400, en vez de ignorar las que sobran.
-fn cap_custom_instructions(mut instructions: Vec<String>) -> (Vec<String>, Option<String>) {
+/// Cada instrucción puede tener como máximo 300 caracteres.
+const MAX_CUSTOM_INSTRUCTION_CHARS: usize = 300;
+
+/// Ajusta las instrucciones a los límites documentados de DeepL (10 como
+/// máximo, 300 caracteres cada una) y devuelve un aviso por cada ajuste:
+/// mandarlas sin ajustar hace que DeepL rechace la traducción entera con un
+/// 400, en vez de ignorar lo que sobra.
+fn cap_custom_instructions(mut instructions: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let mut warnings = Vec::new();
+
     if instructions.len() > MAX_CUSTOM_INSTRUCTIONS {
-        let warning = format!(
+        warnings.push(format!(
             "Solo se mandaron las primeras {} instrucciones de DeepL (había {}): la API no acepta más.",
             MAX_CUSTOM_INSTRUCTIONS,
             instructions.len()
-        );
+        ));
         instructions.truncate(MAX_CUSTOM_INSTRUCTIONS);
-        (instructions, Some(warning))
-    } else {
-        (instructions, None)
     }
+
+    for (i, instruction) in instructions.iter_mut().enumerate() {
+        let len = instruction.chars().count();
+        if len > MAX_CUSTOM_INSTRUCTION_CHARS {
+            warnings.push(format!(
+                "La instrucción {} de DeepL tenía {} caracteres y se recortó a {} (el máximo de la API).",
+                i + 1,
+                len,
+                MAX_CUSTOM_INSTRUCTION_CHARS
+            ));
+            *instruction = instruction.chars().take(MAX_CUSTOM_INSTRUCTION_CHARS).collect();
+        }
+    }
+
+    (instructions, warnings)
 }
 
 async fn deepl(
@@ -215,14 +233,16 @@ async fn deepl(
     // estilo; para eso está `custom_instructions`, abajo.
 
     let mut warnings = Vec::new();
-    let mut instructions = parse_custom_instructions(req.deepl_instructions);
+    // (cantidad, largo máximo en caracteres) de lo que realmente se manda;
+    // se agrega al error de DeepL para poder diagnosticar un 400.
+    let mut sent_instructions: Option<(usize, usize)> = None;
+    let instructions = parse_custom_instructions(req.deepl_instructions);
     if !instructions.is_empty() {
         if CUSTOM_INSTRUCTIONS_LANGS.contains(&lang_family(req.target_lang).as_str()) {
-            let (capped, warning) = cap_custom_instructions(instructions);
-            instructions = capped;
-            if let Some(w) = warning {
-                warnings.push(w);
-            }
+            let (instructions, cap_warnings) = cap_custom_instructions(instructions);
+            warnings.extend(cap_warnings);
+            let longest = instructions.iter().map(|i| i.chars().count()).max().unwrap_or(0);
+            sent_instructions = Some((instructions.len(), longest));
             body.as_object_mut()
                 .unwrap()
                 .insert("custom_instructions".into(), json!(instructions));
@@ -253,7 +273,14 @@ async fn deepl(
     let status = res.status();
     let raw = res.text().await?;
     if !status.is_success() {
-        return Err(format!("DeepL {}: {}", status.as_u16(), short(&raw)).into());
+        let sent = match sent_instructions {
+            Some((n, longest)) => format!(
+                " [se enviaron {} instrucciones; la más larga: {} caracteres]",
+                n, longest
+            ),
+            None => String::new(),
+        };
+        return Err(format!("DeepL {}: {}{}", status.as_u16(), short(&raw), sent).into());
     }
 
     let parsed: Value = serde_json::from_str(&raw)?;
@@ -755,15 +782,31 @@ mod tests {
     #[test]
     fn custom_instructions_cap_at_ten_with_a_warning() {
         let twelve: Vec<String> = (1..=12).map(|n| format!("Rule {n}")).collect();
-        let (capped, warning) = cap_custom_instructions(twelve);
+        let (capped, warnings) = cap_custom_instructions(twelve);
         assert_eq!(capped.len(), 10);
         assert_eq!(capped[9], "Rule 10");
-        assert!(warning.unwrap().contains("había 12"));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("había 12"));
 
         let five: Vec<String> = (1..=5).map(|n| format!("Rule {n}")).collect();
-        let (capped, warning) = cap_custom_instructions(five.clone());
+        let (capped, warnings) = cap_custom_instructions(five.clone());
         assert_eq!(capped, five);
-        assert!(warning.is_none());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn custom_instructions_trim_each_one_to_300_chars() {
+        // 'ñ' ocupa 2 bytes: el recorte debe contar caracteres, no bytes.
+        let long = "ñ".repeat(350);
+        let exact = "a".repeat(300);
+        let (capped, warnings) =
+            cap_custom_instructions(vec!["corta".into(), long, exact.clone()]);
+        assert_eq!(capped[0], "corta");
+        assert_eq!(capped[1].chars().count(), 300);
+        assert_eq!(capped[2], exact);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("instrucción 2"));
+        assert!(warnings[0].contains("350"));
     }
 
     #[test]
