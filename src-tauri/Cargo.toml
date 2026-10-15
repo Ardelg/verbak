@@ -1,6 +1,6 @@
 [package]
 name = "verbak"
-version = "1.0.5"
+version = "1.0.6"
 description = "Verbak - traductor de escritorio con atajos globales y limpieza de puntuacion"
 authors = ["Ariel Delgue"]
 edition = "2021"
