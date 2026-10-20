@@ -34,6 +34,27 @@ interface SanitizeSettings {
   custom: CustomRule[];
 }
 
+type PromptMode = "natural" | "literal" | "custom";
+
+interface LlmSettings {
+  temperature: number;
+  top_p: number;
+  prompt_mode: PromptMode;
+  custom_prompt: string;
+  avoid_words: string;
+  gemini_thinking: boolean;
+  style_samples: string;
+  review_pass: boolean;
+}
+
+/** Resultado guardado en la pestaña "Naturalidad" para comparar pruebas. */
+interface LabRun {
+  id: number;
+  text: string;
+  label: string;
+  error?: boolean;
+}
+
 interface AppSettings {
   api_key: string;
   profiles: ApiProfile[];
@@ -45,6 +66,7 @@ interface AppSettings {
   context: string;
   slack_context: string;
   deepl_instructions: string;
+  llm: LlmSettings;
   opacity: number;
   sanitize: SanitizeSettings;
   shortcut_a: string;
@@ -232,7 +254,24 @@ const EMPTY_SANITIZE: SanitizeSettings = {
   custom: [],
 };
 
-type SettingsTab = "apis" | "translation" | "style" | "general";
+type SettingsTab = "apis" | "translation" | "natural" | "style" | "general";
+
+const DEFAULT_LLM: LlmSettings = {
+  temperature: 0.7,
+  top_p: 1,
+  prompt_mode: "natural",
+  custom_prompt: "",
+  avoid_words: "",
+  gemini_thinking: false,
+  style_samples: "",
+  review_pass: false,
+};
+
+const PROMPT_MODES: { id: PromptMode; label: string; hint: string }[] = [
+  { id: "natural", label: "Natural", hint: "Mantiene tu voz y evita el estilo de IA. Recomendado." },
+  { id: "literal", label: "Literal", hint: "El prompt anterior: fiel y pegado al original. Suena más a máquina." },
+  { id: "custom", label: "Personalizado", hint: "Escribes tú cómo debe traducir. {lang} = idioma destino." },
+];
 
 /** Idiomas ofrecidos para el par A ↔ B. El código es estilo DeepL. */
 const LANGS: { code: string; name: string; short: string }[] = [
@@ -530,6 +569,7 @@ function App() {
     context: "",
     slack_context: "",
     deepl_instructions: "",
+    llm: DEFAULT_LLM,
     opacity: 100,
     sanitize: EMPTY_SANITIZE,
     shortcut_a: "Ctrl+Alt+D",
@@ -540,6 +580,14 @@ function App() {
     profile_slack: null,
   });
   const [saveStatus, setSaveStatus] = useState("");
+
+  // Pestaña "Naturalidad": pruebas con los ajustes sin guardar.
+  const [labText, setLabText] = useState("");
+  const [labProfile, setLabProfile] = useState("");
+  const [labInformal, setLabInformal] = useState(false);
+  const [labBusy, setLabBusy] = useState(false);
+  const [labRuns, setLabRuns] = useState<LabRun[]>([]);
+  const [labPrompt, setLabPrompt] = useState<string | null>(null);
 
 
   const profileIsUsable = (p: ApiProfile) =>
@@ -734,6 +782,60 @@ function App() {
 
   const setSanitize = (patch: Partial<SanitizeSettings>) =>
     setSettings((s) => ({ ...s, sanitize: { ...s.sanitize, ...patch } }));
+
+  /* ---------------- Naturalidad (laboratorio) ---------------- */
+
+  const setLlm = (patch: Partial<LlmSettings>) =>
+    setSettings((s) => ({ ...s, llm: { ...s.llm, ...patch } }));
+
+  const llmProfiles = settings.profiles.filter(
+    (p) => p.provider === "gemini" || p.provider === "openai" || p.provider === "anthropic"
+  );
+
+  const runLab = async () => {
+    if (!labText.trim() || labBusy) return;
+    setLabBusy(true);
+    const l = settings.llm;
+    const mode = PROMPT_MODES.find((m) => m.id === l.prompt_mode)?.label ?? l.prompt_mode;
+    const parts = [
+      `T ${l.temperature.toFixed(2)}`,
+      l.top_p < 1 ? `top-p ${l.top_p.toFixed(2)}` : "",
+      mode,
+      l.style_samples.trim() ? "con ejemplos" : "",
+      l.review_pass ? "2 pasadas" : "",
+      labInformal ? "Slack" : "",
+    ].filter(Boolean);
+    try {
+      const r = await invoke<TranslationResult>("lab_translate", {
+        settings,
+        text: labText,
+        informal: labInformal,
+        profileId: labProfile || null,
+      });
+      const warn = r.warnings.length ? ` · ⚠ ${r.warnings.join(" | ")}` : "";
+      setLabRuns((runs) => [
+        { id: Date.now(), text: r.text, label: `${r.profile_name} · ${parts.join(" · ")}${warn}` },
+        ...runs,
+      ].slice(0, 8));
+    } catch (e) {
+      setLabRuns((runs) => [{ id: Date.now(), text: String(e), label: parts.join(" · "), error: true }, ...runs]);
+    } finally {
+      setLabBusy(false);
+    }
+  };
+
+  const toggleLabPrompt = async () => {
+    if (labPrompt !== null) {
+      setLabPrompt(null);
+      return;
+    }
+    setLabPrompt(await invoke<string>("lab_prompt", { settings, text: labText, informal: labInformal }));
+  };
+
+  const seedCustomPrompt = async () => {
+    const template = await invoke<string>("lab_natural_template", { targetLang: settings.lang_b });
+    setLlm({ prompt_mode: "custom", custom_prompt: template });
+  };
 
   /* ---------------- Estilos base ---------------- */
 
@@ -947,6 +1049,7 @@ function App() {
             {([
               ["apis", "APIs"],
               ["translation", "Traducción"],
+              ["natural", "Naturalidad"],
               ["style", "Estilo de salida"],
               ["general", "General"],
             ] as [SettingsTab, string][]).map(([key, label]) => (
@@ -1212,6 +1315,237 @@ function App() {
                     lo largo, con un aviso (en vez de fallar la traducción). Solo funciona si el idioma de destino es
                     alemán, inglés, español, francés, italiano, japonés, coreano o chino (o sus variantes); con
                     cualquier otro destino, DeepL traduce igual pero sin aplicarlas, y también vas a ver un aviso.
+                  </p>
+                </div>
+              </>
+            )}
+
+            {tab === "natural" && (
+              <>
+                <p className="text-[11px] text-slate-500 ml-0.5">
+                  Ajustes para que la traducción suene escrita por ti. Solo los usan los motores con IA
+                  (Gemini, OpenAI, Claude, Ollama). Pruébalos abajo antes de guardar.
+                </p>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs text-slate-500 ml-0.5">Estilo del prompt</label>
+                  <div className="flex gap-1.5">
+                    {PROMPT_MODES.map((m) => (
+                      <button
+                        key={m.id}
+                        onClick={() => setLlm({ prompt_mode: m.id })}
+                        className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors focus:outline-none ${
+                          settings.llm.prompt_mode === m.id
+                            ? "bg-indigo-50 border-indigo-200 text-indigo-700"
+                            : "bg-white border-slate-200 text-slate-500 hover:text-slate-800"
+                        }`}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10.5px] text-slate-400 ml-0.5">
+                    {PROMPT_MODES.find((m) => m.id === settings.llm.prompt_mode)?.hint}
+                  </p>
+                  {settings.llm.prompt_mode === "custom" && (
+                    <>
+                      <textarea
+                        value={settings.llm.custom_prompt}
+                        onChange={(e) => setLlm({ custom_prompt: e.target.value })}
+                        className={`${inputClass} resize-y p-3 custom-scrollbar min-h-[120px] font-mono text-xs`}
+                        placeholder="Ej: You are a bilingual writer. Rewrite my text in {lang} the way I would write it..."
+                      />
+                      <button
+                        onClick={seedCustomPrompt}
+                        className="self-start px-3 py-1 text-[11px] font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 rounded-lg focus:outline-none"
+                      >
+                        Partir del prompt Natural
+                      </button>
+                      <p className="text-[10.5px] text-slate-400 ml-0.5">
+                        Reemplaza la parte de "cómo traducir". Las reglas de salida (devolver solo la traducción,
+                        no responder preguntas, respetar el formato) se añaden siempre.
+                      </p>
+                    </>
+                  )}
+                </div>
+
+                <div className="flex flex-col">
+                  <div className="flex justify-between items-center mb-1 ml-0.5">
+                    <label className="text-xs text-slate-500">Temperatura (creatividad)</label>
+                    <span className="text-xs text-indigo-600 font-semibold">{settings.llm.temperature.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1.5"
+                    step="0.05"
+                    value={settings.llm.temperature}
+                    onChange={(e) => setLlm({ temperature: parseFloat(e.target.value) })}
+                    className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                  />
+                  <p className="text-[10.5px] text-slate-400 mt-1 ml-0.5">
+                    Baja (0.2) = elige siempre la palabra más probable: plano y fácil de detectar como IA.
+                    0.7 = recomendado. Por encima de 1 = más variado, pero puede cambiar el sentido.
+                    Claude usa como máximo 1.
+                  </p>
+                </div>
+
+                <div className="flex flex-col">
+                  <div className="flex justify-between items-center mb-1 ml-0.5">
+                    <label className="text-xs text-slate-500">Top-p (variedad de vocabulario)</label>
+                    <span className="text-xs text-indigo-600 font-semibold">
+                      {settings.llm.top_p >= 1 ? "apagado" : settings.llm.top_p.toFixed(2)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="1"
+                    step="0.05"
+                    value={settings.llm.top_p}
+                    onChange={(e) => setLlm({ top_p: parseFloat(e.target.value) })}
+                    className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                  />
+                  <p className="text-[10.5px] text-slate-400 mt-1 ml-0.5">
+                    Descarta las palabras raras. Útil con temperatura alta (p. ej. 1.0 + 0.9) para variar sin que
+                    se vaya de tema. Mueve uno de los dos, no ambos a la vez. Claude lo ignora.
+                  </p>
+                </div>
+
+                <div className="flex flex-col">
+                  <label className="text-xs text-slate-500 mb-1 ml-0.5">Ejemplos de cómo escribes (en el idioma destino)</label>
+                  <textarea
+                    value={settings.llm.style_samples}
+                    onChange={(e) => setLlm({ style_samples: e.target.value })}
+                    className={`${inputClass} resize-y p-3 custom-scrollbar min-h-[90px]`}
+                    placeholder="Pega 2 o 3 párrafos que hayas escrito tú en inglés (correos, mensajes, justificaciones)..."
+                  />
+                  <p className="text-[10.5px] text-slate-400 mt-1 ml-0.5">
+                    Suele ser lo que más ayuda: el modelo copia tu forma de escribir, no el contenido. Hasta 4000
+                    caracteres. Déjalo vacío si no tienes textos tuyos en ese idioma.
+                  </p>
+                </div>
+
+                <div className="flex flex-col">
+                  <label className="text-xs text-slate-500 mb-1 ml-0.5">Palabras y frases prohibidas (una por línea)</label>
+                  <textarea
+                    value={settings.llm.avoid_words}
+                    onChange={(e) => setLlm({ avoid_words: e.target.value })}
+                    className={`${inputClass} resize-y p-3 custom-scrollbar min-h-[80px] text-xs`}
+                    placeholder={"delve\ncrucial\nleverage"}
+                  />
+                  <p className="text-[10.5px] text-slate-400 mt-1 ml-0.5">
+                    Las palabras típicas de texto generado por IA. Añade las que veas repetirse en tus traducciones.
+                  </p>
+                </div>
+
+                <label className="flex items-start gap-2 cursor-pointer ml-0.5">
+                  <input
+                    type="checkbox"
+                    checked={settings.llm.review_pass}
+                    onChange={(e) => setLlm({ review_pass: e.target.checked })}
+                    className={`${checkboxClass} mt-0.5`}
+                  />
+                  <span className="text-sm text-slate-600">
+                    Segunda pasada de revisión
+                    <span className="block text-[10.5px] text-slate-400">
+                      El modelo relee su traducción junto al original y corrige lo que suene a traducido o a IA.
+                      Tarda el doble y gasta el doble de cuota.
+                    </span>
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-2 cursor-pointer ml-0.5">
+                  <input
+                    type="checkbox"
+                    checked={settings.llm.gemini_thinking}
+                    onChange={(e) => setLlm({ gemini_thinking: e.target.checked })}
+                    className={`${checkboxClass} mt-0.5`}
+                  />
+                  <span className="text-sm text-slate-600">
+                    Dejar pensar a Gemini 2.5 Flash
+                    <span className="block text-[10.5px] text-slate-400">
+                      Razona antes de responder: a veces más natural, pero tarda varios segundos más. Los modelos
+                      Pro piensan siempre.
+                    </span>
+                  </span>
+                </label>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-3 flex flex-col gap-2">
+                  <p className="text-slate-700 text-xs font-medium">Probar</p>
+                  <textarea
+                    value={labText}
+                    onChange={(e) => {
+                      setLabText(e.target.value);
+                      setLabPrompt(null);
+                    }}
+                    className={`${inputClass} resize-y p-3 custom-scrollbar min-h-[80px]`}
+                    placeholder="Pega aquí un texto tuyo y prueba distintas combinaciones..."
+                  />
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <select
+                      value={labProfile}
+                      onChange={(e) => setLabProfile(e.target.value)}
+                      className={`${inputClass} py-1 flex-1 min-w-[140px]`}
+                    >
+                      <option value="">(Perfil activo)</option>
+                      {llmProfiles.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <label className="flex items-center gap-1.5 cursor-pointer text-xs text-slate-500">
+                      <input
+                        type="checkbox"
+                        checked={labInformal}
+                        onChange={(e) => {
+                          setLabInformal(e.target.checked);
+                          setLabPrompt(null);
+                        }}
+                        className={checkboxClass}
+                      />
+                      Modo Slack
+                    </label>
+                    <button onClick={toggleLabPrompt} className={`${secondaryBtn} py-1 text-xs`}>
+                      {labPrompt === null ? "Ver prompt" : "Ocultar prompt"}
+                    </button>
+                    <button onClick={runLab} disabled={labBusy || !labText.trim()} className={`${primaryBtn} py-1 text-xs`}>
+                      {labBusy ? "Traduciendo…" : "Traducir"}
+                    </button>
+                  </div>
+                  {labPrompt !== null && (
+                    <pre className="text-[10.5px] text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-2 whitespace-pre-wrap max-h-48 overflow-y-auto custom-scrollbar select-text">
+                      {labPrompt}
+                    </pre>
+                  )}
+                  {labRuns.map((run) => (
+                    <div key={run.id} className="border border-slate-200 rounded-xl p-2 flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10.5px] flex-1 ${run.error ? "text-red-600" : "text-indigo-600"}`}>
+                          {run.label}
+                        </span>
+                        {!run.error && (
+                          <button
+                            onClick={() => navigator.clipboard?.writeText(run.text).catch(() => {})}
+                            className="text-[10.5px] text-slate-400 hover:text-indigo-600 focus:outline-none"
+                          >
+                            Copiar
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-sm text-slate-700 whitespace-pre-wrap select-text">{run.text}</p>
+                    </div>
+                  ))}
+                  {labRuns.length > 0 && (
+                    <button
+                      onClick={() => setLabRuns([])}
+                      className="self-start text-[10.5px] text-slate-400 hover:text-slate-600 focus:outline-none"
+                    >
+                      Borrar pruebas
+                    </button>
+                  )}
+                  <p className="text-[10.5px] text-slate-400">
+                    Las pruebas usan lo que ves en pantalla sin guardarlo, y solo el perfil elegido (sin fallback).
+                    Pulsa "Guardar ajustes" para que los atajos usen esta configuración.
                   </p>
                 </div>
               </>
