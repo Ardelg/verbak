@@ -1,6 +1,6 @@
 /*
  * MACOS PERMISSIONS GUIDE:
- * Para que `enigo` pueda simular pulsaciones de teclas en macOS (Cmd+C, Cmd+V),
+ * Para que Verbak pueda simular pulsaciones de teclas en macOS (Cmd+C, Cmd+V),
  * la aplicación compilada (.app) o la terminal ejecutando `cargo run` necesita
  * permisos de "Accesibilidad".
  *
@@ -12,11 +12,14 @@
  * 4. Activa el interruptor junto a la aplicación.
  */
 
+#[cfg(target_os = "macos")]
+mod keys_macos;
 mod ollama;
 mod providers;
 mod sanitize;
 
 use copypasta::{ClipboardContext, ClipboardProvider};
+#[cfg(not(target_os = "macos"))]
 use enigo::{Enigo, Keyboard, Settings, Key, Direction};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use serde_json::json;
@@ -44,7 +47,7 @@ fn default_target_lang() -> String { "ES".into() }
 fn default_lang_a() -> String { "ES".into() }
 fn default_lang_b() -> String { "EN-US".into() }
 fn default_context() -> String {
-    "Treat 'the agent' as a neutral AI system. Do not use gendered pronouns (he/she) for it. Use 'the agent', 'it', or passive phrasing as appropriate. The goal is literal, functional translation, level B2/C1. Do not improve the text.".into()
+    "Treat 'the agent' as a neutral AI system. Do not use gendered pronouns (he/she) for it. Use 'the agent', 'it', or passive phrasing as appropriate. Keep my voice and my level of formality. Do not improve the text.".into()
 }
 fn default_slack_context() -> String {
     "Mensaje de chat informal para compañeros de trabajo en Slack. Usa un tono amigable, natural y muy relajado. NO uses lenguaje corporativo formal.".into()
@@ -297,12 +300,10 @@ fn set_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error + Send + Sy
     Ok(())
 }
 
-/// En macOS, `enigo` necesita consultar el layout de teclado actual vía
-/// HIToolbox/TSM para simular teclas, y esas llamadas solo son válidas desde
-/// el hilo principal: si se invocan desde un worker de tokio (como ocurría
-/// antes en los flujos de atajos), macOS 27 las mata con
-/// `dispatch_assert_queue_fail` (EXC_BREAKPOINT). Este helper despacha `f`
-/// al hilo principal y espera el resultado sin bloquear el runtime async.
+/// Ejecuta `f` en el hilo principal y espera el resultado sin bloquear el
+/// runtime async. Las llamadas de teclado de macOS (HIToolbox/TSM) solo son
+/// válidas desde el hilo principal: desde un worker de tokio, macOS 27 las
+/// mata con `dispatch_assert_queue_fail` (EXC_BREAKPOINT).
 async fn run_on_main<T, F>(app: &AppHandle, f: F) -> Option<T>
 where
     T: Send + 'static,
@@ -317,83 +318,54 @@ where
     rx.await.ok()
 }
 
-fn simulate_copy() {
-    let mut enigo = Enigo::new(&Settings::default()).unwrap();
-    #[cfg(target_os = "macos")]
-    {
-        // El atajo que disparó este flujo (p. ej. Cmd+Alt+F) todavía tiene sus
-        // modificadores físicamente presionados en este instante: si no los
-        // soltamos primero, el Cmd+C sintético sale como Cmd+Alt+C (o peor) y
-        // la app enfocada lo ignora, dejando el portapapeles sin actualizar.
-        let _ = enigo.key(Key::Meta, Direction::Release);
-        let _ = enigo.key(Key::Alt, Direction::Release);
-        let _ = enigo.key(Key::Control, Direction::Release);
-        let _ = enigo.key(Key::Shift, Direction::Release);
-        std::thread::sleep(Duration::from_millis(20));
-
-        // CGEventPost es asíncrono: si el keyDown de 'c' sale pegado al de
-        // Cmd, a veces el WindowServer todavía no fusionó el flag de Cmd en
-        // la tabla de modificadores global, y 'c' llega como si Cmd no
-        // estuviera — la app enfocada lo toma como "escribir la letra c"
-        // y, como hay texto seleccionado, lo reemplaza por una "c" suelta.
-        // Separar press/click/release con una pausa chica le da tiempo al
-        // sistema a asentar el estado antes del siguiente evento.
-        let _ = enigo.key(Key::Meta, Direction::Press);
-        std::thread::sleep(Duration::from_millis(15));
-        let _ = enigo.key(Key::Unicode('c'), Direction::Press);
-        std::thread::sleep(Duration::from_millis(15));
-        let _ = enigo.key(Key::Unicode('c'), Direction::Release);
-        std::thread::sleep(Duration::from_millis(15));
-        let _ = enigo.key(Key::Meta, Direction::Release);
+/// Espera (como mucho ~1 s) a que el usuario suelte las teclas del atajo.
+/// Si Ctrl/Option/Cmd siguen apretados cuando mandamos el Cmd+C sintético, la
+/// app enfocada recibe otra combinación y no copia (o escribe una "c").
+#[cfg(target_os = "macos")]
+async fn wait_for_modifiers_release() {
+    let deadline = std::time::Instant::now() + Duration::from_millis(1000);
+    while keys_macos::modifiers_held() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = enigo.key(Key::Alt, Direction::Release);
-        let _ = enigo.key(Key::Control, Direction::Release);
-        let _ = enigo.key(Key::Shift, Direction::Release);
-        std::thread::sleep(Duration::from_millis(20));
-
-        let _ = enigo.key(Key::Control, Direction::Press);
-        let _ = enigo.key(Key::Unicode('c'), Direction::Click);
-        let _ = enigo.key(Key::Control, Direction::Release);
-    }
+    // Un respiro para que la app enfocada procese el keyUp real.
+    tokio::time::sleep(Duration::from_millis(30)).await;
 }
 
+#[cfg(not(target_os = "macos"))]
+async fn wait_for_modifiers_release() {}
+
+#[cfg(target_os = "macos")]
+fn simulate_copy() {
+    keys_macos::send_cmd_shortcut(keys_macos::KEY_C);
+}
+
+#[cfg(target_os = "macos")]
 fn simulate_paste() {
+    keys_macos::send_cmd_shortcut(keys_macos::KEY_V);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn simulate_copy() {
+    simulate_ctrl(Key::Unicode('c'));
+}
+
+#[cfg(not(target_os = "macos"))]
+fn simulate_paste() {
+    simulate_ctrl(Key::Unicode('v'));
+}
+
+#[cfg(not(target_os = "macos"))]
+fn simulate_ctrl(key: Key) {
     let mut enigo = Enigo::new(&Settings::default()).unwrap();
-    #[cfg(target_os = "macos")]
-    {
-        // Mismo motivo que en simulate_copy: soltar los modificadores del
-        // atajo antes de mandar el Cmd+V sintético.
-        let _ = enigo.key(Key::Meta, Direction::Release);
-        let _ = enigo.key(Key::Alt, Direction::Release);
-        let _ = enigo.key(Key::Control, Direction::Release);
-        let _ = enigo.key(Key::Shift, Direction::Release);
-        std::thread::sleep(Duration::from_millis(20));
+    // Soltar los modificadores del atajo antes de mandar el Ctrl+C/V sintético.
+    let _ = enigo.key(Key::Alt, Direction::Release);
+    let _ = enigo.key(Key::Control, Direction::Release);
+    let _ = enigo.key(Key::Shift, Direction::Release);
+    std::thread::sleep(Duration::from_millis(20));
 
-        // Mismo motivo que en simulate_copy: separar press/click/release le
-        // da tiempo al sistema a asentar el flag de Cmd antes de que llegue
-        // la 'v', si no a veces llega sin el modificador y se escribe una
-        // "v" suelta en vez de pegar.
-        let _ = enigo.key(Key::Meta, Direction::Press);
-        std::thread::sleep(Duration::from_millis(15));
-        let _ = enigo.key(Key::Unicode('v'), Direction::Press);
-        std::thread::sleep(Duration::from_millis(15));
-        let _ = enigo.key(Key::Unicode('v'), Direction::Release);
-        std::thread::sleep(Duration::from_millis(15));
-        let _ = enigo.key(Key::Meta, Direction::Release);
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = enigo.key(Key::Alt, Direction::Release);
-        let _ = enigo.key(Key::Control, Direction::Release);
-        let _ = enigo.key(Key::Shift, Direction::Release);
-        std::thread::sleep(Duration::from_millis(20));
-
-        let _ = enigo.key(Key::Control, Direction::Press);
-        let _ = enigo.key(Key::Unicode('v'), Direction::Click);
-        let _ = enigo.key(Key::Control, Direction::Release);
-    }
+    let _ = enigo.key(Key::Control, Direction::Press);
+    let _ = enigo.key(key, Direction::Click);
+    let _ = enigo.key(Key::Control, Direction::Release);
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -552,6 +524,7 @@ async fn replace_text(app: AppHandle, new_text: String) -> Result<(), String> {
 
     set_clipboard(&new_text).map_err(|e| e.to_string())?;
     std::thread::sleep(Duration::from_millis(100));
+    wait_for_modifiers_release().await;
     run_on_main(&app, simulate_paste).await;
 
     // Opcional: Restaurar portapapeles original
@@ -597,22 +570,41 @@ fn notify_error(app: &AppHandle, message: String) {
 }
 
 /// Copia la selección actual y devuelve el texto, guardando el portapapeles previo.
+///
+/// El portapapeles se vacía antes del Cmd+C y se espera a que vuelva a tener
+/// texto. Así, si la copia falla, no se traduce (y pega) por error lo que
+/// hubiera de antes en el portapapeles.
 async fn capture_selection(app: &AppHandle) -> Option<String> {
     let orig_clip = get_clipboard().unwrap_or_default();
     {
         let mut guard = ORIGINAL_CLIPBOARD.lock().unwrap();
         *guard = Some(orig_clip.clone());
     }
+    let _ = set_clipboard("");
 
+    wait_for_modifiers_release().await;
     run_on_main(app, simulate_copy).await;
-    std::thread::sleep(Duration::from_millis(150)); // Esperar al SO
 
-    let copied_text = get_clipboard().unwrap_or_default();
-    if copied_text.trim().is_empty() {
-        println!("Error: portapapeles vacío");
-        return None;
+    // Algunas apps (navegadores, Electron) tardan en llenar el portapapeles.
+    let deadline = std::time::Instant::now() + Duration::from_millis(1200);
+    loop {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let copied_text = get_clipboard().unwrap_or_default();
+        if !copied_text.trim().is_empty() {
+            return Some(copied_text);
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
     }
-    Some(copied_text)
+
+    println!("Error: no se pudo copiar la selección");
+    let _ = set_clipboard(&orig_clip);
+    notify_error(
+        app,
+        "No se pudo copiar el texto seleccionado. Comprueba que haya texto seleccionado y que Verbak tenga permiso de Accesibilidad.".into(),
+    );
+    None
 }
 
 fn restore_clipboard() {
@@ -634,6 +626,7 @@ fn handle_flow_a(app: AppHandle) {
             Ok(result) => {
                 let _ = set_clipboard(&result.text);
                 std::thread::sleep(Duration::from_millis(50));
+                wait_for_modifiers_release().await;
                 run_on_main(&app, simulate_paste).await;
                 restore_clipboard();
             }
@@ -690,6 +683,7 @@ fn handle_flow_slack(app: AppHandle) {
             Ok(result) => {
                 let _ = set_clipboard(&result.text);
                 std::thread::sleep(Duration::from_millis(100));
+                wait_for_modifiers_release().await;
                 run_on_main(&app, simulate_paste).await;
                 restore_clipboard();
             }

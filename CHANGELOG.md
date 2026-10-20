@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.8
+
+- **Traducciones que suenan humanas.** El prompt de Gemini, OpenAI, Claude y
+  Ollama ahora pide mantener la voz, el ritmo y el registro del original, y
+  evitar el vocabulario y los conectores típicos de texto generado por IA. La
+  temperatura sube de 0.2 a 0.7. Hay una versión del prompt para usar en la web
+  de Gemini en `docs/prompt-traduccion-natural.md`.
+- **macOS: ya no aparece una "c" o una "v" suelta al reemplazar.** El Cmd+C/V
+  sintético se manda con CoreGraphics marcando Cmd en cada evento, y se espera
+  a que sueltes las teclas del atajo antes de enviarlo.
+- Si la copia de la selección falla, Verbak avisa en vez de traducir y pegar lo
+  que hubiera antes en el portapapeles.
+
 ## 1.0.0
 
 Primera versión pública.
