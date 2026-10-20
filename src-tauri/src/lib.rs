@@ -34,7 +34,7 @@ use tauri::image::Image;
 use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
 
-use providers::{ApiProfile, Provider, TranslateRequest};
+use providers::{ApiProfile, LlmSettings, Provider, TranslateRequest};
 use sanitize::SanitizeSettings;
 
 lazy_static! {
@@ -87,6 +87,9 @@ struct AppSettings {
     /// proveedores LLM, y DeepL no los usa (ver `providers::deepl`).
     #[serde(default)]
     deepl_instructions: String,
+    /// Temperatura, prompt y demás parámetros de los LLM (pestaña "Naturalidad").
+    #[serde(default)]
+    llm: LlmSettings,
     #[serde(default = "default_opacity")]
     opacity: u8,
     #[serde(default)]
@@ -118,6 +121,7 @@ impl Default for AppSettings {
             context: default_context(),
             slack_context: default_slack_context(),
             deepl_instructions: "".into(),
+            llm: LlmSettings::default(),
             opacity: default_opacity(),
             sanitize: SanitizeSettings::default(),
             shortcut_a: default_shortcut_a(),
@@ -275,6 +279,7 @@ fn sanitize_preview(app: AppHandle, text: String) -> String {
 /// Prueba de conexión de un perfil, sin necesidad de guardarlo antes.
 #[tauri::command]
 async fn test_profile(profile: ApiProfile) -> Result<String, String> {
+    let style = LlmSettings::default();
     let req = TranslateRequest {
         text: "Hi, this is a connection test.",
         target_lang: "ES",
@@ -282,6 +287,8 @@ async fn test_profile(profile: ApiProfile) -> Result<String, String> {
         informal: false,
         plain_punctuation: true,
         deepl_instructions: "",
+        style: &style,
+        system_override: None,
     };
     providers::translate(&profile, &req)
         .await
@@ -454,9 +461,30 @@ async fn translate_text(
     preferred_profile: Option<String>,
 ) -> Result<TranslationResult, String> {
     let settings = load_settings(app);
-    let target = resolve_target(&settings, text, force_target_lang);
+    translate_with(
+        &settings,
+        text,
+        context_override,
+        informal,
+        force_target_lang,
+        preferred_profile,
+    )
+    .await
+}
+
+/// Traduce con unos ajustes concretos (los guardados o, desde la pestaña
+/// "Naturalidad", los que el usuario está probando sin guardar).
+async fn translate_with(
+    settings: &AppSettings,
+    text: &str,
+    context_override: Option<String>,
+    informal: bool,
+    force_target_lang: Option<String>,
+    preferred_profile: Option<String>,
+) -> Result<TranslationResult, String> {
+    let target = resolve_target(settings, text, force_target_lang);
     let context = context_override.unwrap_or_else(|| settings.context.clone());
-    let chain = build_chain(&settings, preferred_profile.as_deref());
+    let chain = build_chain(settings, preferred_profile.as_deref());
 
     if chain.is_empty() {
         return Err("No hay ninguna API configurada. Abre Ajustes y añade una.".into());
@@ -475,10 +503,17 @@ async fn translate_text(
             informal,
             plain_punctuation: settings.sanitize.enabled,
             deepl_instructions: &settings.deepl_instructions,
+            style: &settings.llm,
+            system_override: None,
         };
         match providers::translate(&profile, &req).await {
             Ok((raw, soft_warnings)) => {
                 warnings.extend(soft_warnings);
+                let raw = if settings.llm.review_pass && providers::is_llm(profile.provider) {
+                    review_translation(&profile, &req, text, raw, &mut warnings).await
+                } else {
+                    raw
+                };
                 return Ok(TranslationResult {
                     text: sanitize::sanitize(&raw, &settings.sanitize),
                     profile_name: profile.name.clone(),
@@ -494,6 +529,94 @@ async fn translate_text(
     }
 
     Err(warnings.join(" | "))
+}
+
+/// Segunda pasada: el mismo modelo revisa su borrador. Si falla, se queda el
+/// borrador y se avisa (la traducción ya es válida).
+async fn review_translation(
+    profile: &ApiProfile,
+    req: &TranslateRequest<'_>,
+    original: &str,
+    draft: String,
+    warnings: &mut Vec<String>,
+) -> String {
+    let prompt = providers::review_prompt(req);
+    let input = providers::review_input(original, &draft);
+    let review_req = TranslateRequest {
+        text: &input,
+        system_override: Some(&prompt),
+        ..*req
+    };
+    match providers::translate(profile, &review_req).await {
+        Ok((reviewed, _)) if !reviewed.trim().is_empty() => strip_review_markers(&reviewed),
+        Ok(_) => draft,
+        Err(e) => {
+            warnings.push(format!("Revisión omitida: {}", e));
+            draft
+        }
+    }
+}
+
+/// Por si el modelo devuelve el texto aún envuelto en `<<< >>>` o con la
+/// etiqueta "DRAFT:".
+fn strip_review_markers(text: &str) -> String {
+    let mut t = text.trim();
+    for label in ["DRAFT:", "FINAL:"] {
+        if let Some(rest) = t.strip_prefix(label) {
+            t = rest.trim();
+        }
+    }
+    if let Some(rest) = t.strip_prefix("<<<") {
+        t = rest.trim();
+    }
+    if let Some(rest) = t.strip_suffix(">>>") {
+        t = rest.trim();
+    }
+    t.to_string()
+}
+
+/// Pestaña "Naturalidad": traduce con los ajustes que hay en pantalla, sin
+/// guardarlos, y solo con el perfil elegido (sin fallback, para comparar).
+#[tauri::command]
+async fn lab_translate(
+    settings: AppSettings,
+    text: String,
+    informal: bool,
+    profile_id: Option<String>,
+) -> Result<TranslationResult, String> {
+    let mut settings = migrate(settings);
+    settings.auto_fallback = false;
+    let context = informal.then(|| settings.slack_context.clone());
+    translate_with(&settings, &text, context, informal, None, profile_id).await
+}
+
+/// El prompt de sistema exacto que recibiría el modelo con estos ajustes.
+#[tauri::command]
+fn lab_prompt(settings: AppSettings, text: String, informal: bool) -> String {
+    let settings = migrate(settings);
+    let target = if text.trim().is_empty() {
+        settings.lang_b.clone()
+    } else {
+        resolve_target(&settings, &text, None)
+    };
+    let context = if informal { &settings.slack_context } else { &settings.context };
+    providers::system_prompt(&TranslateRequest {
+        text: &text,
+        target_lang: &target,
+        context,
+        informal,
+        plain_punctuation: settings.sanitize.enabled,
+        deepl_instructions: "",
+        style: &settings.llm,
+        system_override: None,
+    })
+}
+
+/// Punto de partida para el prompt personalizado: el estilo natural, con
+/// `{lang}` en lugar del idioma.
+#[tauri::command]
+fn lab_natural_template(target_lang: String) -> String {
+    providers::natural_style("{lang}", &providers::lang_family(&target_lang))
 }
 
 /// La pantalla de ajustes necesita más alto que la de revisión.
@@ -780,6 +903,12 @@ mod tests {
     }
 
     #[test]
+    fn review_markers_are_stripped() {
+        assert_eq!(strip_review_markers("DRAFT:\n<<<\nhi there\n>>>"), "hi there");
+        assert_eq!(strip_review_markers("hi there"), "hi there");
+    }
+
+    #[test]
     fn pair_works_for_non_english_languages() {
         let mut settings = AppSettings::default();
         settings.lang_a = "ES".into();
@@ -810,6 +939,9 @@ pub fn run() {
             set_view_size,
             hide_window,
             force_translate,
+            lab_translate,
+            lab_prompt,
+            lab_natural_template,
             ollama::ollama_status,
             ollama::ollama_start,
             ollama::ollama_install,
