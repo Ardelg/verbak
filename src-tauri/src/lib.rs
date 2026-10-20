@@ -15,6 +15,7 @@
 #[cfg(target_os = "macos")]
 mod keys_macos;
 mod ollama;
+mod protect;
 mod providers;
 mod sanitize;
 
@@ -87,6 +88,10 @@ struct AppSettings {
     /// proveedores LLM, y DeepL no los usa (ver `providers::deepl`).
     #[serde(default)]
     deepl_instructions: String,
+    /// No traducir lo que va entre comillas: se quita del texto antes de
+    /// mandarlo al motor y se vuelve a poner tal cual (ver `protect`).
+    #[serde(default)]
+    keep_quoted: bool,
     /// Temperatura, prompt y demás parámetros de los LLM (pestaña "Naturalidad").
     #[serde(default)]
     llm: LlmSettings,
@@ -121,6 +126,7 @@ impl Default for AppSettings {
             context: default_context(),
             slack_context: default_slack_context(),
             deepl_instructions: "".into(),
+            keep_quoted: false,
             llm: LlmSettings::default(),
             opacity: default_opacity(),
             sanitize: SanitizeSettings::default(),
@@ -490,6 +496,10 @@ async fn translate_with(
         return Err("No hay ninguna API configurada. Abre Ajustes y añade una.".into());
     }
 
+    // Frases entre comillas: el motor no las ve, así no puede traducirlas.
+    let protected = settings.keep_quoted.then(|| protect::protect_quotes(text));
+    let send_text = protected.as_ref().map(|p| p.text.as_str()).unwrap_or(text);
+
     let mut warnings: Vec<String> = Vec::new();
     for profile in chain {
         if !profile.is_usable() {
@@ -497,7 +507,7 @@ async fn translate_with(
             continue;
         }
         let req = TranslateRequest {
-            text,
+            text: send_text,
             target_lang: &target,
             context: &context,
             informal,
@@ -510,12 +520,17 @@ async fn translate_with(
             Ok((raw, soft_warnings)) => {
                 warnings.extend(soft_warnings);
                 let raw = if settings.llm.review_pass && providers::is_llm(profile.provider) {
-                    review_translation(&profile, &req, text, raw, &mut warnings).await
+                    review_translation(&profile, &req, send_text, raw, &mut warnings).await
                 } else {
                     raw
                 };
+                // Limpiar antes de devolver las citas, para no tocar su texto.
+                let mut out = sanitize::sanitize(&raw, &settings.sanitize);
+                if let Some(p) = &protected {
+                    out = restore_protected(&out, p, settings, &mut warnings);
+                }
                 return Ok(TranslationResult {
-                    text: sanitize::sanitize(&raw, &settings.sanitize),
+                    text: out,
                     profile_name: profile.name.clone(),
                     provider: profile.provider.label().to_string(),
                     warnings,
@@ -529,6 +544,41 @@ async fn translate_with(
     }
 
     Err(warnings.join(" | "))
+}
+
+/// Devuelve las frases entre comillas a su sitio. Si la limpieza de comillas
+/// está activa, solo cambia las comillas de fuera a rectas; el texto citado
+/// queda intacto.
+fn restore_protected(
+    translated: &str,
+    protected: &protect::Protected,
+    settings: &AppSettings,
+    warnings: &mut Vec<String>,
+) -> String {
+    let straighten = settings.sanitize.enabled && settings.sanitize.quotes;
+    let segments: Vec<(String, String)> = protected
+        .segments
+        .iter()
+        .map(|(marker, original)| {
+            if !straighten {
+                return (marker.clone(), original.clone());
+            }
+            let mut chars: Vec<char> = original.chars().collect();
+            let last = chars.len() - 1;
+            chars[0] = '"';
+            chars[last] = '"';
+            (marker.clone(), chars.into_iter().collect())
+        })
+        .collect();
+    let (out, missing) = protect::restore_quotes(translated, &segments);
+    if !missing.is_empty() {
+        warnings.push(format!(
+            "El motor borró {} frase(s) entre comillas; revisa la traducción: {}",
+            missing.len(),
+            missing.join(" · ")
+        ));
+    }
+    out
 }
 
 /// Segunda pasada: el mismo modelo revisa su borrador. Si falla, se queda el
@@ -900,6 +950,21 @@ mod tests {
         assert_eq!(resolve_target(&settings, en, None), "ES");
         // Forzar siempre gana.
         assert_eq!(resolve_target(&settings, "cualquier cosa", Some("FR".into())), "FR");
+    }
+
+    #[test]
+    fn quoted_text_comes_back_untouched_with_straight_quotes() {
+        let mut settings = AppSettings::default();
+        settings.keep_quoted = true;
+        let p = protect::protect_quotes("Dice \u{201C}it\u{2019}s fine \u{2014} really\u{201D}.");
+        let mut warnings = Vec::new();
+        let out = restore_protected("It says {{Q1}}.", &p, &settings, &mut warnings);
+        // Comillas de fuera rectas; el texto citado (con su guion largo) intacto.
+        assert_eq!(out, "It says \"it\u{2019}s fine \u{2014} really\".");
+        assert!(warnings.is_empty());
+        let out = restore_protected("It says.", &p, &settings, &mut warnings);
+        assert_eq!(out, "It says.");
+        assert_eq!(warnings.len(), 1);
     }
 
     #[test]

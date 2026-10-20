@@ -66,6 +66,7 @@ interface AppSettings {
   context: string;
   slack_context: string;
   deepl_instructions: string;
+  keep_quoted: boolean;
   llm: LlmSettings;
   opacity: number;
   sanitize: SanitizeSettings;
@@ -569,6 +570,7 @@ function App() {
     context: "",
     slack_context: "",
     deepl_instructions: "",
+    keep_quoted: false,
     llm: DEFAULT_LLM,
     opacity: 100,
     sanitize: EMPTY_SANITIZE,
@@ -1272,6 +1274,22 @@ function App() {
                     )}
                   </p>
                 </div>
+                <label className="flex items-start gap-2 cursor-pointer ml-0.5">
+                  <input
+                    type="checkbox"
+                    checked={settings.keep_quoted}
+                    onChange={(e) => setSettings({ ...settings, keep_quoted: e.target.checked })}
+                    className={`${checkboxClass} mt-0.5`}
+                  />
+                  <span className="text-sm text-slate-600">
+                    No traducir el texto entre comillas
+                    <span className="block text-[10.5px] text-slate-400">
+                      Lo que va entre "comillas", “comillas” o «comillas» se deja tal cual, letra por letra. Verbak
+                      lo quita antes de mandar el texto al motor y lo vuelve a poner después, así que funciona con
+                      todos los motores. Las comillas simples (') no cuentan.
+                    </span>
+                  </span>
+                </label>
                 <div className="flex flex-col flex-1">
                   <label className="text-xs text-slate-500 mb-1 ml-0.5">
                     Contexto de traducción (prompt general)
