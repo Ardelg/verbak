@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.9
+
+- **No traducir el texto entre comillas** (Ajustes → Traducción). Lo que va
+  entre "comillas", “comillas” o «comillas» se quita del texto antes de
+  mandarlo al motor y se vuelve a poner tal cual después, así que ningún motor
+  puede traducirlo. Si el motor pierde una de esas frases, Verbak avisa.
+
 ## 1.0.8
 
 - **Traducciones que suenan humanas.** El prompt de Gemini, OpenAI, Claude y
